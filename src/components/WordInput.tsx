@@ -1,6 +1,12 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { PRESETS } from '../utils/presets';
 import ConfirmDialog from './ConfirmDialog';
+import {
+  createSpeechRecognizer,
+  isSpeechRecognitionSupported,
+  getErrorMessage,
+} from '../utils/recognizer';
+import { showToast } from './Toast';
 
 interface WordInputProps {
   words: string[];
@@ -17,9 +23,6 @@ interface WordInputProps {
   selectedVoice: string | null;
   onVoiceChange: (voice: string) => void;
   voices: SpeechSynthesisVoice[];
-  isVoiceListening: boolean;
-  onToggleVoiceInput: () => void;
-  onStopVoiceInput: () => void;
 }
 
 export default function WordInput({
@@ -37,9 +40,6 @@ export default function WordInput({
   selectedVoice,
   onVoiceChange,
   voices,
-  isVoiceListening,
-  onToggleVoiceInput,
-  onStopVoiceInput,
 }: WordInputProps) {
   const [inputValue, setInputValue] = useState('');
   const [batchValue, setBatchValue] = useState('');
@@ -47,7 +47,11 @@ export default function WordInput({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editValue, setEditValue] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [voiceConfirmOpen, setVoiceConfirmOpen] = useState(false);
+  const [voiceText, setVoiceText] = useState('');
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
 
   const handleAdd = () => {
     const trimmed = inputValue.trim();
@@ -84,6 +88,93 @@ export default function WordInput({
     setEditingIndex(null);
   };
 
+  // 语音识别
+  useEffect(() => {
+    if (!isSpeechRecognitionSupported()) return;
+    const recognition = createSpeechRecognizer();
+    if (!recognition) return;
+    recognitionRef.current = recognition;
+
+    recognition.onstart = () => {
+      setIsVoiceListening(true);
+    };
+    recognition.onend = () => {
+      setIsVoiceListening(false);
+    };
+
+    recognition.onresult = (event: any) => {
+      let finalTranscript = '';
+      let interimTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+      if (finalTranscript.trim()) {
+        // 停止识别，弹出确认框
+        recognition.stop();
+        setVoiceText(finalTranscript.trim());
+        setVoiceConfirmOpen(true);
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      showToast(getErrorMessage(event.error), 'error');
+      setIsVoiceListening(false);
+    };
+
+    return () => {
+      try { recognition.abort(); } catch {}
+    };
+  }, []);
+
+  const toggleVoiceInput = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (!rec) {
+      showToast('当前浏览器不支持语音识别功能', 'error');
+      return;
+    }
+    if (isVoiceListening) {
+      rec.stop();
+    } else {
+      try {
+        rec.start();
+        showToast('请说出要添加的词语');
+      } catch {
+        showToast('语音识别启动失败', 'error');
+      }
+    }
+  }, [isVoiceListening]);
+
+  const stopVoiceInput = useCallback(() => {
+    recognitionRef.current?.stop();
+  }, []);
+
+  const handleVoiceConfirm = () => {
+    const trimmed = voiceText.trim();
+    if (!trimmed) return;
+    const parts = trimmed.split(/[\s,，]+/).filter((w) => w.trim());
+    if (parts.length === 1) {
+      onAddWord(parts[0]);
+    } else {
+      onAddWords(parts);
+    }
+    setVoiceConfirmOpen(false);
+    setVoiceText('');
+  };
+
+  const handleVoiceCancel = () => {
+    setVoiceConfirmOpen(false);
+    setVoiceText('');
+    // 取消后继续识别
+    setTimeout(() => {
+      toggleVoiceInput();
+    }, 300);
+  };
+
   const chineseVoices = voices.filter(
     (v) => v.lang.startsWith('zh') || v.lang.startsWith('cmn') || v.lang.startsWith('yue')
   );
@@ -106,7 +197,7 @@ export default function WordInput({
           <div className="input-header">
             <h2>添加词语</h2>
             <div className="input-methods">
-              <button className="btn-icon" title="语音输入" onClick={onToggleVoiceInput}>
+              <button className="btn-icon" title="语音输入" onClick={toggleVoiceInput}>
                 <span className="icon">🎤</span>
                 <span className="btn-text">语音</span>
               </button>
@@ -136,7 +227,7 @@ export default function WordInput({
                 <span className="voice-wave" />
               </div>
               <span className="voice-text">正在聆听...</span>
-              <button className="btn btn-small btn-danger" onClick={onStopVoiceInput}>停止</button>
+              <button className="btn btn-small btn-danger" onClick={stopVoiceInput}>停止</button>
             </div>
           )}
 
@@ -322,7 +413,7 @@ export default function WordInput({
         </div>
       </div>
 
-      {/* 确认对话框 */}
+      {/* 清空确认对话框 */}
       <ConfirmDialog
         isOpen={confirmOpen}
         title="清空确认"
@@ -335,6 +426,91 @@ export default function WordInput({
         }}
         onCancel={() => setConfirmOpen(false)}
       />
+
+      {/* 语音识别确认对话框 */}
+      {voiceConfirmOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) handleVoiceCancel();
+          }}
+        >
+          <div
+            style={{
+              background: 'white',
+              borderRadius: 16,
+              padding: '24px 28px',
+              minWidth: 320,
+              maxWidth: '90vw',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+            }}
+          >
+            <h3 style={{ margin: '0 0 16px', fontSize: 18, color: '#333' }}>
+              确认识别结果
+            </h3>
+            <input
+              type="text"
+              value={voiceText}
+              onChange={(e) => setVoiceText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleVoiceConfirm();
+                if (e.key === 'Escape') handleVoiceCancel();
+              }}
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                fontSize: 16,
+                border: '1px solid #ddd',
+                borderRadius: 8,
+                marginBottom: 20,
+                boxSizing: 'border-box',
+              }}
+            />
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleVoiceCancel}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: 8,
+                  border: '1px solid #ddd',
+                  background: '#f5f5f5',
+                  color: '#666',
+                  fontSize: 14,
+                  cursor: 'pointer',
+                }}
+              >
+                取消（继续识别）
+              </button>
+              <button
+                onClick={handleVoiceConfirm}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: '#4CAF50',
+                  color: 'white',
+                  fontSize: 14,
+                  cursor: 'pointer',
+                }}
+              >
+                确认添加
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

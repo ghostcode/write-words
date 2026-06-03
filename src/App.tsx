@@ -2,15 +2,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import WordInput from './components/WordInput';
 import DictationView from './components/DictationView';
 import CheckView from './components/CheckView';
-import ToastContainer, { showToast } from './components/Toast';
+import ToastContainer from './components/Toast';
 import { useDictation } from './hooks/useDictation';
 import { useSpeechSynthesis, SpeechEngine } from './utils/speech';
-import {
-  createSpeechRecognizer,
-  extractWords,
-  isSpeechRecognitionSupported,
-  getErrorMessage,
-} from './utils/recognizer';
 import { getSettings, saveSettings, getLastWords, saveLastWords, saveRecord } from './utils/storage';
 
 type Page = 'input' | 'dictation' | 'check';
@@ -22,10 +16,8 @@ export default function App() {
   const [showWord, setShowWord] = useState(true);
   const [selectedVoiceName, setSelectedVoiceName] = useState<string | null>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [isVoiceListening, setIsVoiceListening] = useState(false);
 
   const speechEngine = useRef<SpeechEngine>(useSpeechSynthesis()).current;
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const selectedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
 
   const dictation = useDictation(words, interval);
@@ -60,53 +52,6 @@ export default function App() {
       window.speechSynthesis?.removeEventListener('voiceschanged', loadVoices);
     };
   }, [speechEngine, selectedVoiceName]);
-
-  // 语音识别初始化 - 使用 ref 避免闭包陷阱
-  const wordsRef = useRef(words);
-  wordsRef.current = words;
-
-  useEffect(() => {
-    if (!isSpeechRecognitionSupported()) return;
-    const recognition = createSpeechRecognizer();
-    if (!recognition) return;
-    recognitionRef.current = recognition;
-
-    recognition.onstart = () => setIsVoiceListening(true);
-    recognition.onend = () => setIsVoiceListening(false);
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let finalTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
-        }
-      }
-      if (finalTranscript.trim()) {
-        const extracted = extractWords(finalTranscript.trim());
-        extracted.forEach((w) => {
-          const trimmed = w.trim();
-          if (trimmed && !wordsRef.current.includes(trimmed)) {
-            setWords((prev) => {
-              if (prev.includes(trimmed)) return prev;
-              const next = [...prev, trimmed];
-              saveLastWords(next);
-              return next;
-            });
-          }
-        });
-        showToast(`识别到: ${finalTranscript.trim()}`);
-      }
-    };
-
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      showToast(getErrorMessage(event.error), 'error');
-      setIsVoiceListening(false);
-    };
-
-    return () => {
-      try { recognition.abort(); } catch {}
-    };
-  }, []);
 
   // 保存设置 - 使用 ref 确保保存最新值
   const settingsRef = useRef({ interval, showWord, selectedVoice: selectedVoiceName });
@@ -177,29 +122,6 @@ export default function App() {
   const clearAllWords = useCallback(() => {
     setWords([]);
     saveLastWords([]);
-  }, []);
-
-  // 语音输入
-  const toggleVoiceInput = useCallback(() => {
-    const rec = recognitionRef.current;
-    if (!rec) {
-      showToast('当前浏览器不支持语音识别功能', 'error');
-      return;
-    }
-    if (isVoiceListening) {
-      rec.stop();
-    } else {
-      try {
-        rec.start();
-        showToast('请说出要添加的词语');
-      } catch {
-        showToast('语音识别启动失败', 'error');
-      }
-    }
-  }, [isVoiceListening]);
-
-  const stopVoiceInput = useCallback(() => {
-    recognitionRef.current?.stop();
   }, []);
 
   // 提默控制
@@ -283,9 +205,7 @@ export default function App() {
           selectedVoice={selectedVoiceName}
           onVoiceChange={handleVoiceChange}
           voices={voices}
-          isVoiceListening={isVoiceListening}
-          onToggleVoiceInput={toggleVoiceInput}
-          onStopVoiceInput={stopVoiceInput}
+          existingWords={words}
         />
       )}
 
